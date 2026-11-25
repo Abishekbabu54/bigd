@@ -1,0 +1,94 @@
+#!/bin/bash
+set -e
+
+mkdir -p ~/spark-maxtemp
+cd ~/spark-maxtemp
+
+# Create temperature dataset
+cat > temperature.csv <<'EOF'
+2026-01-01,32
+2026-01-02,35
+2026-01-03,28
+2026-01-04,42
+2026-01-05,30
+2026-01-06,38
+EOF
+
+# Create Java program
+cat > MaxTemperature.java <<'EOF'
+import org.apache.spark.sql.*;
+import static org.apache.spark.sql.functions.*;
+
+public class MaxTemperature {
+
+    public static void main(String[] args) {
+
+        // Initialize Spark
+        SparkSession spark = SparkSession.builder()
+            .appName("Maximum Temperature")
+            .master("local[*]")
+            .getOrCreate();
+
+        spark.sparkContext().setLogLevel("ERROR");
+
+        // Read temperature dataset
+        Dataset<Row> data = spark.read()
+            .schema("date STRING, temperature INT")
+            .csv(args[0]);
+
+        // Display input data
+        System.out.println("Temperature Dataset:");
+        data.show();
+
+        // Find maximum temperature
+        Dataset<Row> result = data.agg(
+            max("temperature").alias("max_temperature")
+        );
+
+        // Display maximum temperature
+        System.out.println("Maximum Temperature:");
+        result.show();
+
+        // Find date of maximum temperature
+        int maximum = result.first().getInt(0);
+
+        data.filter(col("temperature").equalTo(maximum))
+            .show();
+
+        System.out.println("Maximum Temperature = "
+            + maximum + " Celsius");
+
+        spark.stop();
+    }
+}
+EOF
+
+# Compile Java
+mkdir -p classes
+
+javac -cp "$SPARK_HOME/jars/*" \
+-d classes MaxTemperature.java
+
+# Create JAR
+jar cf maxtemp.jar -C classes .
+
+# Execute Spark application
+spark-submit \
+--class MaxTemperature \
+--master 'local[*]' \
+maxtemp.jar "$PWD/temperature.csv"
+
+# Expected output:
+# +---------------+
+# |max_temperature|
+# +---------------+
+# |             42|
+# +---------------+
+#
+# Maximum Temperature = 42 Celsius
+
+# Requirements:
+# Java and Apache Spark installed.
+# SPARK_HOME must be configured.
+# No Python, Hadoop, YARN or Maven required.
+# Live Spark execution has not been tested here.

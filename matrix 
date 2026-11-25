@@ -1,0 +1,166 @@
+#!/bin/bash
+set -e
+
+mkdir -p ~/matrix-multiplication
+cd ~/matrix-multiplication
+
+# Create input matrices
+# Format: Matrix,row,column,value
+cat > input.txt <<'EOF'
+A,0,0,2
+A,0,1,3
+A,1,0,1
+A,1,1,4
+B,0,0,1
+B,0,1,2
+B,1,0,3
+B,1,1,1
+EOF
+
+# Create Java program
+cat > MatrixMultiplication.java <<'EOF'
+import java.io.IOException;
+import java.util.*;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.*;
+import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class MatrixMultiplication {
+
+    public static class MatrixMapper
+        extends Mapper<LongWritable, Text, Text, Text> {
+
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+
+            String[] data = value.toString().split(",");
+
+            String matrix = data[0];
+            int i = Integer.parseInt(data[1]);
+            int j = Integer.parseInt(data[2]);
+            int val = Integer.parseInt(data[3]);
+
+            int rowsA = context.getConfiguration().getInt("rowsA", 2);
+            int colsB = context.getConfiguration().getInt("colsB", 2);
+
+            if (matrix.equals("A")) {
+                for (int k = 0; k < colsB; k++) {
+                    context.write(
+                        new Text(i + "," + k),
+                        new Text("A," + j + "," + val)
+                    );
+                }
+            } else if (matrix.equals("B")) {
+                for (int k = 0; k < rowsA; k++) {
+                    context.write(
+                        new Text(k + "," + j),
+                        new Text("B," + i + "," + val)
+                    );
+                }
+            }
+        }
+    }
+
+    public static class MatrixReducer
+        extends Reducer<Text, Text, Text, LongWritable> {
+
+        public void reduce(Text key, Iterable<Text> values,
+                Context context)
+                throws IOException, InterruptedException {
+
+            Map<Integer, Integer> A = new HashMap<>();
+            Map<Integer, Integer> B = new HashMap<>();
+
+            for (Text value : values) {
+                String[] data = value.toString().split(",");
+
+                int index = Integer.parseInt(data[1]);
+                int val = Integer.parseInt(data[2]);
+
+                if (data[0].equals("A"))
+                    A.put(index, val);
+                else
+                    B.put(index, val);
+            }
+
+            long sum = 0;
+
+            for (int k : A.keySet()) {
+                sum += (long) A.get(k) * B.getOrDefault(k, 0);
+            }
+
+            context.write(key, new LongWritable(sum));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        Configuration conf = new Configuration();
+
+        conf.setInt("rowsA", 2);
+        conf.setInt("colsB", 2);
+
+        Job job = Job.getInstance(conf, "Matrix Multiplication");
+
+        job.setJarByClass(MatrixMultiplication.class);
+
+        job.setMapperClass(MatrixMapper.class);
+        job.setReducerClass(MatrixReducer.class);
+
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(Text.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(LongWritable.class);
+
+        job.setNumReduceTasks(1);
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+EOF
+
+# Compile Java
+mkdir -p classes
+
+javac -cp "$(hadoop classpath)" \
+-d classes MatrixMultiplication.java
+
+# Create JAR
+jar cf matrix.jar -C classes .
+
+# Create HDFS directory
+BASE="/user/$(whoami)/matrix-$(date +%s)-$$"
+
+hdfs dfs -mkdir -p "$BASE/input"
+
+# Upload input
+hdfs dfs -put input.txt "$BASE/input/"
+
+# Execute MapReduce
+hadoop jar matrix.jar MatrixMultiplication \
+"$BASE/input" "$BASE/output"
+
+# Display result
+echo "Matrix Multiplication Result:"
+hdfs dfs -cat "$BASE/output/part-r-00000"
+
+# Display result as matrix
+hdfs dfs -cat "$BASE/output/part-r-00000" |
+awk '{
+    printf "%s\t", $2
+    if (NR % 2 == 0) printf "\n"
+}'
+
+# Expected output for the given 2x2 matrices:
+# 11    7
+# 13    6
+
+# Requires Java and Hadoop configured and running.
+# Live Hadoop execution has not been tested here.
