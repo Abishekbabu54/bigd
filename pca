@@ -1,0 +1,84 @@
+
+#!/bin/bash
+set -e
+
+mkdir -p ~/spark-pca
+cd ~/spark-pca
+
+# Download Iris dataset
+curl -fL https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data -o iris.csv
+
+# Create Java program
+cat > IrisPCA.java <<'EOF'
+import org.apache.spark.sql.*;
+import org.apache.spark.ml.feature.*;
+
+public class IrisPCA {
+
+    public static void main(String[] args) {
+
+        SparkSession spark = SparkSession.builder()
+            .appName("Iris PCA")
+            .getOrCreate();
+
+        // Load Iris dataset
+        Dataset<Row> data = spark.read()
+            .schema("sepal_length DOUBLE, sepal_width DOUBLE, petal_length DOUBLE, petal_width DOUBLE, species STRING")
+            .csv(args[0]).na().drop();
+
+        // Combine four features into a vector
+        VectorAssembler assembler = new VectorAssembler()
+            .setInputCols(new String[]{
+                "sepal_length",
+                "sepal_width",
+                "petal_length",
+                "petal_width"
+            })
+            .setOutputCol("features");
+
+        Dataset<Row> vectors = assembler.transform(data);
+
+        // Standardize the features
+        StandardScaler scaler = new StandardScaler()
+            .setInputCol("features")
+            .setOutputCol("scaledFeatures")
+            .setWithMean(true)
+            .setWithStd(true);
+
+        Dataset<Row> scaled = scaler.fit(vectors)
+            .transform(vectors);
+
+        // Reduce four features to two
+        PCAModel model = new PCA()
+            .setInputCol("scaledFeatures")
+            .setOutputCol("pcaFeatures")
+            .setK(2)
+            .fit(scaled);
+
+        // Display results
+        model.transform(scaled)
+            .select("species", "pcaFeatures")
+            .show(10, false);
+
+        System.out.println("Explained variance: "
+            + model.explainedVariance());
+
+        spark.stop();
+    }
+}
+EOF
+
+# Compile Java
+mkdir -p classes
+javac -cp "$SPARK_HOME/jars/*" \
+-d classes IrisPCA.java
+
+# Create JAR
+jar cf pca.jar -C classes .
+
+# Execute Spark application
+spark-submit \
+--class IrisPCA \
+--master 'local[*]' \
+pca.jar "$PWD/iris.csv"
+

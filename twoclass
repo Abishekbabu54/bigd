@@ -1,0 +1,86 @@
+
+#!/bin/bash
+set -e
+
+mkdir -p ~/spark-bayes
+cd ~/spark-bayes
+
+# Download Iris dataset
+curl -fL https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data -o iris.csv
+
+# Create Java program
+cat > IrisBayes.java <<'EOF'
+import org.apache.spark.sql.*;
+import org.apache.spark.ml.feature.VectorAssembler;
+import org.apache.spark.ml.classification.*;
+import org.apache.spark.ml.evaluation.*;
+import static org.apache.spark.sql.functions.*;
+
+public class IrisBayes {
+
+    public static void main(String[] args) {
+
+        SparkSession spark = SparkSession.builder()
+            .appName("Iris Bayes Classification")
+            .getOrCreate();
+
+        spark.sparkContext().setLogLevel("ERROR");
+
+        // Load dataset and select two classes
+        Dataset<Row> data = spark.read()
+            .schema("sl DOUBLE, sw DOUBLE, pl DOUBLE, pw DOUBLE, species STRING")
+            .csv(args[0]).na().drop()
+            .filter(col("species").isin(
+                "Iris-setosa", "Iris-versicolor"))
+            .withColumn("label",
+                when(col("species").equalTo("Iris-setosa"), 0.0)
+                .otherwise(1.0));
+
+        // Combine features
+        Dataset<Row> features = new VectorAssembler()
+            .setInputCols(new String[]{"sl", "sw", "pl", "pw"})
+            .setOutputCol("features")
+            .transform(data);
+
+        // Split into training and testing data
+        Dataset<Row>[] split = features.randomSplit(
+            new double[]{0.8, 0.2}, 42L);
+
+        // Train Gaussian Naive Bayes
+        NaiveBayesModel model = new NaiveBayes()
+            .setModelType("gaussian")
+            .fit(split[0]);
+
+        // Predict test data
+        Dataset<Row> result = model.transform(split[1]);
+
+        result.select("species", "label",
+            "prediction", "probability").show(false);
+
+        // Calculate accuracy
+        double accuracy = new MulticlassClassificationEvaluator()
+            .setMetricName("accuracy")
+            .evaluate(result);
+
+        System.out.println("Accuracy: " + accuracy * 100 + "%");
+
+        spark.stop();
+    }
+}
+EOF
+
+# Compile Java
+mkdir -p classes
+
+javac -cp "$SPARK_HOME/jars/*" \
+-d classes IrisBayes.java
+
+# Create JAR
+jar cf bayes.jar -C classes .
+
+# Execute Spark program
+spark-submit \
+--class IrisBayes \
+--master 'local[*]' \
+bayes.jar "$PWD/iris.csv"
+
